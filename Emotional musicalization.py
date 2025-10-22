@@ -1,3 +1,35 @@
+# ----------- Drum Synthesis -----------
+def synth_kick(dur=0.18, amp=0.7):
+	n = int(SAMPLE_RATE * dur)
+	env = adsr_envelope(n, SAMPLE_RATE, 0.005, 0.04, 0.5, 0.04)
+	out = []
+	for i in range(n):
+		t = i / SAMPLE_RATE
+		f = 120.0 * (1 - t / dur) + 40.0  # pitch drop
+		s = math.sin(2 * math.pi * f * t) * env[i] * amp
+		out.append(s)
+	return out
+
+def synth_snare(dur=0.13, amp=0.5):
+	n = int(SAMPLE_RATE * dur)
+	env = adsr_envelope(n, SAMPLE_RATE, 0.002, 0.03, 0.3, 0.04)
+	out = []
+	for i in range(n):
+		noise = (random.random() * 2 - 1)
+		s = noise * env[i] * amp
+		out.append(s)
+	return out
+
+def synth_hihat(dur=0.07, amp=0.3):
+	n = int(SAMPLE_RATE * dur)
+	env = adsr_envelope(n, SAMPLE_RATE, 0.001, 0.01, 0.2, 0.02)
+	out = []
+	for i in range(n):
+		noise = (random.random() * 2 - 1)
+		s = noise * env[i] * amp
+		out.append(s)
+	return out
+
 import argparse
 import math
 import os
@@ -392,15 +424,30 @@ def compose_and_render(cfg: MoodConfig, duration_sec: float = 30.0) -> List[floa
 		mix_inplace(out, chord_third_note, bar_start)
 		mix_inplace(out, chord_fifth_note, bar_start)
 
-		# Bass: root at bar start, one note every half bar
+		# Bass: root at bar start, one note every half bar (volume up for groove)
 		bass_freq = midi_to_freq(bass_root + (chord_root - cfg.root_midi))
 		bass_note_len = bar_sec / 2
 		for k in range(2):
 			bass = synth_note(
 				freq=bass_freq, duration_sec=bass_note_len, wave_type="triangle",
-				attack=0.005, decay=0.06, sustain=0.7, release=0.08, volume=0.22
+				attack=0.005, decay=0.06, sustain=0.7, release=0.08, volume=0.29
 			)
 			mix_inplace(out, bass, bar_start + int(k * bass_note_len * SAMPLE_RATE))
+
+		# --- Drum pattern: kick, snare, hihat ---
+		# 4/4: kick on 1, 3; snare on 2, 4; hihat every 1/8
+		drum_steps = beats_per_bar * steps_per_beat
+		step_samples = int(step_sec * SAMPLE_RATE)
+		for step in range(drum_steps):
+			t0 = bar_start + step * step_samples
+			# Kick: beat 1, 3
+			if step % (steps_per_beat * 2) == 0:
+				mix_inplace(out, synth_kick(), t0)
+			# Snare: beat 2, 4
+			if step % (steps_per_beat * 2) == steps_per_beat:
+				mix_inplace(out, synth_snare(), t0)
+			# Hihat: every 1/8
+			mix_inplace(out, synth_hihat(), t0)
 
 		# Melody: random walk around chord tones
 		steps_per_bar = beats_per_bar * steps_per_beat
@@ -463,11 +510,33 @@ def parse_args(argv: List[str]) -> argparse.Namespace:
 	p.add_argument("--duration", type=float, default=30.0, help="Duration in seconds (default 30)")
 	p.add_argument("--outfile", type=str, default=None, help="Output file path (.wav)")
 	p.add_argument("--no-play", action="store_true", help="Save only, do not play")
+	p.add_argument("--all-moods", action="store_true", help="Generate for all supported moods and save to folder")
 	return p.parse_args(argv)
 
 
 def main(argv: List[str]):
 	args = parse_args(argv)
+
+	# Batch mode: generate for all moods
+	all_moods_list = [
+		"happy", "sad", "calm", "energetic", "angry", "romantic", "mysterious",
+		"anxious", "depressed", "lonely", "fearful", "tense", "gloomy", "bored", "frustrated",
+	]
+
+	if args.all_moods:
+		duration = clamp(args.duration if args.duration else 30.0, 5.0, 180.0)
+		print(f"Batch generating {len(all_moods_list)} moods | Duration: {duration}s")
+		out_dir = os.path.join(os.getcwd(), "music folder")
+		if not os.path.exists(out_dir):
+			os.makedirs(out_dir)
+		ts = time.strftime("%Y%m%d_%H%M%S")
+		for mood in all_moods_list:
+			cfg = get_mood_config(mood)
+			print(f" -> {cfg.name} | Scale: {cfg.scale} | BPM: {cfg.bpm}")
+			samples = compose_and_render(cfg, duration)
+			outfile = os.path.join(out_dir, f"output_{cfg.name}_{ts}.wav")
+			save_and_maybe_play(samples, outfile, play=False)
+		return
 
 	if args.mood is None:
 		# Interactive input
@@ -488,11 +557,16 @@ def main(argv: List[str]):
 	samples = compose_and_render(cfg, duration)
 
 	# Output path
-	out_dir = os.getcwd()
+	# Always save to 'music folder'
+	out_dir = os.path.join(os.getcwd(), "music folder")
+	if not os.path.exists(out_dir):
+		os.makedirs(out_dir)
 	if args.outfile:
-		outfile = args.outfile
-		if not outfile.lower().endswith(".wav"):
-			outfile += ".wav"
+		# If user specifies a filename, save to output music folder
+		base = args.outfile
+		if not base.lower().endswith(".wav"):
+			base += ".wav"
+		outfile = os.path.join(out_dir, os.path.basename(base))
 	else:
 		ts = time.strftime("%Y%m%d_%H%M%S")
 		outfile = os.path.join(out_dir, f"output_{cfg.name}_{ts}.wav")
